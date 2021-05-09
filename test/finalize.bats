@@ -28,6 +28,9 @@ teardown() {
 
     gpupgrade kill-services
 
+    "$GPHOME_SOURCE"/bin/psql postgres -c "DROP TABLE IF EXISTS t_quote_test;"
+    "$GPHOME_TARGET"/bin/psql postgres -c "DROP TABLE IF EXISTS t_quote_test;"
+
     run_teardowns
 }
 
@@ -60,6 +63,8 @@ upgrade_cluster() {
             tablespace_dirs=($(query_tablespace_dirs $GPHOME_SOURCE $PGPORT))
         fi
 
+        create_partitions_with_keywords_for_names
+
         gpupgrade initialize \
             --automatic \
             --source-gphome="$GPHOME_SOURCE" \
@@ -69,6 +74,7 @@ upgrade_cluster() {
             --disk-free-ratio 0 \
             "$LINK_MODE" \
             "$HBA_HOSTNAMES" \
+            --skip-version-check \
             --verbose 3>&-
         gpupgrade execute --non-interactive --verbose
 
@@ -81,6 +87,8 @@ upgrade_cluster() {
         if is_GPDB5 "$GPHOME_SOURCE"; then
             check_tablespace_data
         fi
+
+        validate_partitions_with_keywords_for_names
 
         # the source data directories are not deleted
         if [ "$LINK_MODE" == "--mode=link" ]; then
@@ -228,4 +236,41 @@ validate_pg_hba_conf() {
             log "expected ${datadir}/pg_hba.conf to 'not' contain any of the hosts '${expected_hosts[*]}'. Found '${actual_hosts[*]}'"
         fi
     done
+}
+
+create_partitions_with_keywords_for_names() {
+    # Create partition table with keywords for names (reserved, non-reserved
+    # and unclassified).
+    "${GPHOME_SOURCE}"/bin/psql -d postgres<<- EOF
+    DROP TABLE IF EXISTS t_quote_test;
+    CREATE TABLE t_quote_test (a int, b int, c int, d int, e text)
+        DISTRIBUTED BY (a)
+        PARTITION BY RANGE (b)
+            SUBPARTITION BY RANGE (c)
+                SUBPARTITION TEMPLATE (
+                START (1) END (2) EVERY (1),
+                DEFAULT SUBPARTITION "current" )
+            SUBPARTITION BY LIST (e)
+                SUBPARTITION TEMPLATE (
+                SUBPARTITION "at" VALUES ('val1'),
+                SUBPARTITION "window" VALUES ('val2'),
+                DEFAULT SUBPARTITION dsp )
+            ( START (2002) END (2003) EVERY (1),
+            DEFAULT PARTITION dp );
+EOF
+}
+
+validate_partitions_with_keywords_for_names() {
+    # Check if the partition table with keywords for names had its schema
+    # migrated successfully.
+    local rows_src
+    local rows_target
+    rows_src=$("${GPHOME_SOURCE}"/bin/psql -d postgres -Atc \
+        "SELECT count(*) FROM pg_partition WHERE tablename='t_quote_test';")
+    rows_target=$("${GPHOME_TARGET}"/bin/psql -d postgres -Atc \
+         "SELECT count(*) FROM pg_partition WHERE tablename='t_quote_test';")
+    if (( $rows_src != $rows_target )); then
+        fail "Number of partitions in root table t_quote_test doesn't match. \
+            Source cluster = $rows_src, Target cluster = $rows_target"
+    fi
 }
