@@ -8,34 +8,58 @@ set -ex
 apk add --no-progress openssh-client
 cp -R cluster_env_files/.ssh /root/.ssh
 
-echo 'Install PostGIS on source cluster...'
-scp postgis/postgis*.gppkg gpadmin@mdw:/tmp/
-time ssh -n gpadmin@mdw "
-    set -eux -o pipefail
+echo 'Install source pxf on all hosts...'
+while IFS= read -r host; do
+     scp pxf_source/pxf-*.rpm gpadmin@$host:/tmp
+
+     ssh -n centos@"$host" "
+        set -eu -o pipefail
+
+        # Install pxf dependencies...
+        sudo yum install -q -y java-1.8.0-openjdk.x86_64
+
+        sudo rpm -ivh /tmp/pxf-*.rpm
+        sudo chown -R gpadmin:gpadmin /usr/local/pxf-gp5
+        sudo rm -f /tmp/pxf-*.rpm  # clean up to make it easy for later scripts to not collide the source and target rpms
+    "
+done < cluster_env_files/hostfile_all
+
+ssh -n gpadmin@mdw "
+    set -eu -o pipefail
 
     source /usr/local/greenplum-db-source/greenplum_path.sh
     export MASTER_DATA_DIRECTORY=/data/gpdata/master/gpseg-1
 
-    gppkg -i /tmp/postgis*.gppkg
-    /usr/local/greenplum-db-source/share/postgresql/contrib/postgis*/postgis_manager.sh postgres install
+    echo 'Initialize pxf...'
+    mkdir -p /home/gpadmin/pxf
+    export JAVA_HOME=/usr/lib/jvm/jre
+    PXF_CONF=/home/gpadmin/pxf /usr/local/pxf-gp5/bin/pxf cluster init
+    /usr/local/pxf-gp5/bin/pxf cluster start
+    /usr/local/pxf-gp5/bin/pxf version
 "
 
-echo 'Install PostGIS extension in source cluster...'
+echo 'Load PXF data...'
 ssh mdw "
-    set -x
+    set -eu -o pipefail
 
     source /usr/local/greenplum-db-source/greenplum_path.sh
     export MASTER_DATA_DIRECTORY=/data/gpdata/master/gpseg-1
 
     psql -d postgres <<SQL_EOF
-        CREATE TABLE test_upgrade_obj(a int, geom geometry, geog geography);
-        INSERT INTO test_upgrade_obj SELECT i, 'SRID=3857;POLYGON((41 20,41 0,21 0,1 20,1 40,21 40,41 20))'::geometry geom, 'POINT EMPTY'::geography geog from generate_series(1,100)i;
+        CREATE EXTENSION pxf;
 
-        -- These views contain name datatype which is deprecated in GPDB6
-        DROP VIEW geography_columns;
-        DROP VIEW raster_columns;
-        DROP VIEW raster_overviews;
+        CREATE EXTERNAL TABLE pxf_read_test (a TEXT, b TEXT, c TEXT)
+        LOCATION ('pxf://tmp/dummy1'
+        '?FRAGMENTER=org.greenplum.pxf.api.examples.DemoFragmenter'
+        '&ACCESSOR=org.greenplum.pxf.api.examples.DemoAccessor'
+        '&RESOLVER=org.greenplum.pxf.api.examples.DemoTextResolver')
+        FORMAT 'TEXT' (DELIMITER ',');
+
+        SELECT COUNT(*) FROM pxf_read_test;
 SQL_EOF
+
+    echo 'Stop source cluster pxf...'
+    /usr/local/pxf-gp5/bin/pxf cluster stop
 "
 
 #scp sqldump/dump.sql.xz gpadmin@mdw:/tmp/
@@ -51,7 +75,7 @@ SQL_EOF
 #
 echo 'Dropping gphdfs role...'
 ssh mdw "
-    set -x
+    set -eu -o pipefail
 
     source /usr/local/greenplum-db-source/greenplum_path.sh
     export MASTER_DATA_DIRECTORY=/data/gpdata/master/gpseg-1

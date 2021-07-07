@@ -95,22 +95,25 @@ DIFF_FILE=${DIFF_FILE:-"icw.diff"}
 
 # This port is selected by our CI pipeline
 MASTER_PORT=5432
+export GPHOME_SOURCE=/usr/local/greenplum-db-source
+export GPHOME_TARGET=/usr/local/greenplum-db-target
 
 # We'll need this to transfer our built binaries over to the cluster hosts.
 ./ccp_src/scripts/setup_ssh_to_cluster.sh
 
-# Cache our list of hosts to loop over below.
 mapfile -t hosts < cluster_env_files/hostfile_all
-
-export GPHOME_SOURCE=/usr/local/greenplum-db-source
-export GPHOME_TARGET=/usr/local/greenplum-db-target
-
 for host in "${hosts[@]}"; do
     scp rpm_enterprise/gpupgrade-*.rpm "gpadmin@$host:/tmp"
-    ssh centos@$host "sudo rpm -ivh /tmp/gpupgrade-*.rpm"
+    scp pxf_target/pxf-*.rpm gpadmin@$host:/tmp
 
-    # Install PostGIS dependencies if not already
-    ssh centos@$host "sudo chown -R gpadmin:gpadmin /usr/local/greenplum-db-6*"
+    ssh -n centos@"$host" "
+        set -eu -o pipefail
+
+        sudo rpm -ivh /tmp/gpupgrade-*.rpm
+
+        sudo rpm -ivh /tmp/pxf-gp6-*.rpm
+        sudo chown -R gpadmin:gpadmin /usr/local/pxf-gp6
+    "
 done
 
 echo 'Run data migration scripts on source cluster...'
@@ -132,10 +135,6 @@ fi
 
 # Dump the old cluster for later comparison.
 dump_sql $MASTER_PORT /tmp/source.sql
-
-# Copy PostGIS to the target cluster
-scp postgis/postgis* gpadmin@mdw:/tmp/
-scp postgis_254_gpdb6/postgis* gpadmin@mdw:/tmp/postgis-2.5.4-gp6-rhel7-x86_64.gppkg
 
 # Now do the upgrade.
 LINK_MODE=""
@@ -162,7 +161,7 @@ time ssh mdw bash <<'EOF'
     # ip_local_reserved_ports range during/after CCP provisioning.
 
     ###################################
-    # Install PostGIS on target cluster
+    # Install Extensions on target cluster
     ###################################
     # start the target cluster
     export MASTER_DATA_DIRECTORY=$(gpupgrade config show --target-datadir)
@@ -171,14 +170,14 @@ time ssh mdw bash <<'EOF'
 
     gpstart -a
 
-    # FIXME: gppkg -i fails with the following: (Reason='Environment Variable MASTER_DATA_DIRECTORY not set!') exiting...
-    # But we don't know what the MASTER_DATA_DIRECTORY is at this point of the upgrade!
-    # FIXME: gppkg -i fails if the target cluster is not running with:
-    # gppkg failed. (Reason='Cannot connect to GPDB version 5 from installed version 6') exiting...
-    # But again at this point in the upgrade the target cluster does not yet exist.
+    echo "Initialize PXF on target cluster..."
+    export JAVA_HOME=/usr/lib/jvm/jre
+    PXF_CONF=/home/gpadmin/pxf /usr/local/pxf-gp6/bin/pxf cluster init
+#    /usr/local/pxf-gp6/bin/pxf cluster start
+    /usr/local/pxf-gp6/bin/pxf version
 
-    echo "Installing to PostGIS 2.1.5 on target cluster..."
-    gppkg -i /tmp/postgis-2.1.5*gp6*.gppkg
+    psql -d postgres -c "CREATE EXTENSION pxf;"
+
 
     gpstop -a
 EOF
@@ -191,9 +190,8 @@ time ssh mdw bash <<'EOF'
     export GPHOME_TARGET=/usr/local/greenplum-db-target
     export MASTER_PORT=5432
 
-    echo "Before gpupgrade, but after installing PostGIS on target cluster..."
-    psql -d postgres -c "SELECT PostGIS_Version();"
-    psql -d postgres -c "SELECT * FROM pg_extension;"
+    echo "Before gpupgrade, but after installing pxf on target cluster..."
+    /usr/local/pxf-gp6/bin/pxf version
 
     ###################################
     # Finish upgrade
@@ -210,11 +208,10 @@ time ssh mdw bash <<'EOF'
     gpupgrade finalize --non-interactive
 
     echo "After gpupgrade..."
-    psql -d postgres -c "SELECT PostGIS_Version();"
-    psql -d postgres -c "SELECT * FROM pg_extension;"
+    /usr/local/pxf-gp6/bin/pxf version
 EOF
 
-echo 'Get PostGIS data in target cluster...'
+echo 'Verify pxf in target cluster...'
 ssh mdw "
     set -x
 
@@ -222,17 +219,18 @@ ssh mdw "
     export MASTER_DATA_DIRECTORY=/data/gpdata/master/gpseg-1
     export MASTER_PORT=5432
 
-    ###################################
-    # Finish PostGIS 2.1.5 Installation
-    ###################################
+    # initialize target pxf
+    echo 'Initialize PXF on target cluster...'
+    export JAVA_HOME=/usr/lib/jvm/jre
+#    PXF_CONF=/home/gpadmin/pxf /usr/local/pxf-gp6/bin/pxf cluster init
+    /usr/local/pxf-gp6/bin/pxf cluster start
+    /usr/local/pxf-gp6/bin/pxf version
 
-    echo 'Applying PostGIS 2.1.5 improvements to workaround 2.5.4 upgrade issues...'
-    psql -d postgres -f /usr/local/greenplum-db-target/share/postgresql/contrib/postgis-2.1/postgis_replace_views.sql
-    psql -d postgres -f /usr/local/greenplum-db-target/share/postgresql/contrib/postgis-2.1/postgis_enable_operators.sql
-
+    ###################################
+    # Verify pxf Upgrade
+    ###################################
     psql -d postgres <<SQL_EOF
-        SELECT COUNT(*) FROM test_upgrade_obj WHERE st_astext(geom) = 'POLYGON((41 20,41 0,21 0,1 20,1 40,21 40,41 20))';
-        SELECT COUNT(*) FROM test_upgrade_obj WHERE st_astext(geog) = 'POINT EMPTY';
+        SELECT COUNT(*) FROM pxf_read_test;
 SQL_EOF
 "
 
@@ -253,34 +251,5 @@ dump_sql ${MASTER_PORT} /tmp/target.sql
 if ! compare_dumps /tmp/source.sql /tmp/target.sql; then
     echo 'error: before and after dumps differ'
 fi
-
-echo 'Upgrade PostGIS from 2.1.5 to 2.5.4...'
-ssh mdw bash <<'EOF'
-    source /usr/local/greenplum-db-target/greenplum_path.sh
-    export MASTER_DATA_DIRECTORY=/data/gpdata/master/gpseg-1
-    export MASTER_PORT=5432
-
-    echo "Before installing to PostGIS 2.5.4..."
-    psql -d postgres -c "SELECT PostGIS_Version();"
-    psql -d postgres -c "SELECT * FROM pg_extension;"
-
-    # See: https://greenplum.docs.pivotal.io/6-16/analytics/postgis-upgrade.html
-    gppkg -i /tmp/postgis-2.5.4*gp6*.gppkg
-    /usr/local/greenplum-db-target/share/postgresql/contrib/postgis-2.5/postgis_manager.sh postgres upgrade
-
-    echo "Removing PostGIS 2.1.5..."
-    # FIXME: This also removes libgeos_c.so.
-    # gppkg -r postgis-2.1.5
-
-    echo "After installing to PostGIS 2.5.4..."
-    psql -d postgres -c "SELECT PostGIS_Version();"
-    psql -d postgres -c "SELECT * FROM pg_extension;"
-
-    echo "Verifying PostGIS 2.5.4..."
-    psql -d postgres <<SQL_EOF
-        SELECT COUNT(*) FROM test_upgrade_obj WHERE st_astext(geom) = 'POLYGON((41 20,41 0,21 0,1 20,1 40,21 40,41 20))';
-        SELECT COUNT(*) FROM test_upgrade_obj WHERE st_astext(geog) = 'POINT EMPTY';
-SQL_EOF
-EOF
 
 echo 'Upgrade successful.'

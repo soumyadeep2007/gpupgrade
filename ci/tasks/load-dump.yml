@@ -8,8 +8,7 @@ image_resource:
     repository: alpine
     tag: latest
 inputs:
-  - name: postgis_gpdb5
-    path: postgis
+  - name: pxf_source
   - name: gpupgrade_src
   - name: sqldump
   - name: cluster_env_files

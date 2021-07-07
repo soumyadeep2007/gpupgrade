@@ -37,8 +37,10 @@ for host in `cat cluster_env_files/hostfile_all`; do
 
         version=\$(rpm -q --qf '%{version}' '$source_package')
         sudo ln -s /usr/local/greenplum-db-\${version} /usr/local/greenplum-db-source
+        sudo chown -R gpadmin:gpadmin /usr/local/greenplum-db-\${version}
 
         version=\$(rpm -q --qf '%{version}' '$target_package')
         sudo ln -s /usr/local/greenplum-db-\${version} /usr/local/greenplum-db-target
+        sudo chown -R gpadmin:gpadmin /usr/local/greenplum-db-\${version}
     "
 done
