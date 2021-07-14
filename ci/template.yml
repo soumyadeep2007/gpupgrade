@@ -77,11 +77,13 @@ resources:
 - name: rpm_gpdb{{.GPVersion}}_centos{{.CentosVersion}}
   type: gcs
   source:
-    bucket: ((gcs-bucket))
+    bucket: pivotal-gpdb-concourse-resources-dev
     json_key: ((concourse-gcs-resources-service-account-key))
-    regexp: server/published/gpdb{{ majorVersion .GPVersion }}/greenplum-db-({{escapeVersion .GPVersion}}.*)-rhel{{.CentosVersion}}-x86_64.debug.rpm
+    regexp: server/published/gpdb6/greenplum-db-soumyadeep2007-6x_test_pipeline-({{escapeVersion .GPVersion}}.*)-rhel{{.CentosVersion}}-x86_64.debug.rpm
 {{- end }}
 {{end}}
+
+
 
 - name: rpm_oss
   type: gcs

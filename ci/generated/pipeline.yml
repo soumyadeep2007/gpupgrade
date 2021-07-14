@@ -74,16 +74,16 @@ resources:
 - name: rpm_gpdb6_centos6
   type: gcs
   source:
-    bucket: ((gcs-bucket))
+    bucket: pivotal-gpdb-concourse-resources-dev
     json_key: ((concourse-gcs-resources-service-account-key))
-    regexp: server/published/gpdb6/greenplum-db-(6.*)-rhel6-x86_64.debug.rpm
+    regexp: server/published/gpdb6/greenplum-db-soumyadeep2007-6x_test_pipeline-(6.*)-rhel6-x86_64.debug.rpm
 
 - name: rpm_gpdb6_centos7
   type: gcs
   source:
-    bucket: ((gcs-bucket))
+    bucket: pivotal-gpdb-concourse-resources-dev
     json_key: ((concourse-gcs-resources-service-account-key))
-    regexp: server/published/gpdb6/greenplum-db-(6.*)-rhel7-x86_64.debug.rpm
+    regexp: server/published/gpdb6/greenplum-db-soumyadeep2007-6x_test_pipeline-(6.*)-rhel7-x86_64.debug.rpm
 
 - name: rpm_gpdb5_centos6
   type: s3
@@ -102,6 +102,8 @@ resources:
     region_name: ((aws-region))
     secret_access_key: ((bucket-secret-access-key))
     regexp: release_candidates/gpdb_rpm_installer_centos7/gpdb5/greenplum-db-(5.*)-rhel7-x86_64.rpm
+
+
 
 
 - name: rpm_oss
