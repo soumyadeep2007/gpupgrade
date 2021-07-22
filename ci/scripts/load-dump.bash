@@ -7,7 +7,7 @@ set -eux -o pipefail
 
 ./ccp_src/scripts/setup_ssh_to_cluster.sh
 
-scp sqldump/dump.sql.xz gpadmin@mdw:/tmp/
+scp sqldump/dump-1.0.sql.xz gpadmin@mdw:/tmp/dump.sql.xz
 
 echo "Loading the SQL dump into the source cluster..."
 time ssh -n gpadmin@mdw "
