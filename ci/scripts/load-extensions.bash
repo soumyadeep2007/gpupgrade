@@ -8,9 +8,29 @@ set -eux -o pipefail
 ./ccp_src/scripts/setup_ssh_to_cluster.sh
 
 echo "Copying extensions to the source cluster..."
-scp postgis_gppkg_source/postgis*.gppkg gpadmin@mdw:/tmp/postgis_source.gppkg
-scp sqldump/*.sql gpadmin@mdw:/tmp/postgis_dump.sql
-scp madlib_gppkg_source/madlib*.gppkg gpadmin@mdw:/tmp/madlib_source.gppkg
+
+# hostname | dbid |         fselocation
+#----------+------+-----------------------------
+# mdw      |    1 | /data/gpdata/master/gpseg-1
+# smdw     |   14 | /data/gpdata/master/gpseg-1
+
+# sdw1     |    2 | /data/gpdata/primary/gpseg0
+# sdw1     |    3 | /data/gpdata/primary/gpseg1
+
+# sdw2     |    4 | /data/gpdata/primary/gpseg2
+# sdw2     |    5 | /data/gpdata/primary/gpseg3
+
+# sdw3     |    6 | /data/gpdata/primary/gpseg4
+# sdw3     |    7 | /data/gpdata/primary/gpseg5
+
+# sdw2     |    8 | /data/gpdata/mirror/gpseg0
+# sdw2     |    9 | /data/gpdata/mirror/gpseg1
+
+# sdw3     |   10 | /data/gpdata/mirror/gpseg2
+# sdw3     |   11 | /data/gpdata/mirror/gpseg3
+
+# sdw1     |   12 | /data/gpdata/mirror/gpseg4
+# sdw1     |   13 | /data/gpdata/mirror/gpseg5
 
 echo "Installing extensions and sample data on source cluster..."
 time ssh -n mdw "
@@ -20,28 +40,46 @@ time ssh -n mdw "
     export MASTER_DATA_DIRECTORY=/data/gpdata/master/gpseg-1
     export PGPORT=5432
 
-    echo 'Installing PostGIS...'
-    gppkg -i /tmp/postgis_source.gppkg
-    /usr/local/greenplum-db-source/share/postgresql/contrib/postgis-*/postgis_manager.sh postgres install
-    psql postgres -f /tmp/postgis_dump.sql
-    psql -d postgres <<SQL_EOF
-        -- Drop postgis views containing deprecated name datatypes
-        DROP VIEW geography_columns;
-        DROP VIEW raster_columns;
-        DROP VIEW raster_overviews;
-SQL_EOF
+    echo 'Creating filespace...'
+    ssh mdw "mkdir -p /tmp/fs/master"
+    ssh smdw "mkdir -p /tmp/fs/master"
+    ssh sdw1 "mkdir -p /tmp/fs/master /tmp/fs/primary /tmp/fs/mirror"
+    ssh sdw2 "mkdir -p /tmp/fs/master /tmp/fs/primary /tmp/fs/mirror"
+    ssh sdw3 "mkdir -p /tmp/fs/master /tmp/fs/primary /tmp/fs/mirror"
 
-    echo 'Installing MADlib...'
-    gppkg -i /tmp/madlib_source.gppkg
-    /usr/local/greenplum-db-source/madlib/bin/madpack -p greenplum -c /postgres install
+    cat << EOF > /tmp/gpfilespace_config
+        filespace:fs
+        mdw:1:/tmp/fs/master/gpseg-1
+        smdw:14:/tmp/fs/master/standby
+
+        sdw1:2:/tmp/fs/primary/gpseg0
+        sdw1:3:/tmp/fs/primary/gpseg1
+
+        sdw2:4:/tmp/fs/primary/gpseg2
+        sdw2:5:/tmp/fs/primary/gpseg3
+
+        sdw3:6:/tmp/fs/primary/gpseg4
+        sdw3:7:/tmp/fs/primary/gpseg5
+
+        sdw2:8:/tmp/fs/mirror/gpseg0
+        sdw2:9:/tmp/fs/mirror/gpseg1
+
+        sdw3:10:/tmp/fs/mirror/gpseg2
+        sdw3:11:/tmp/fs/mirror/gpseg3
+
+        sdw1:12:/tmp/fs/mirror/gpseg4
+        sdw1:13:/tmp/fs/mirror/gpseg5
+EOF
+
+    gpfilespace --config /tmp/gpfilespace_config
+
+    echo 'Loading data...'
     psql -d postgres <<SQL_EOF
-        DROP TABLE IF EXISTS madlib_test_type;
-        CREATE TABLE madlib_test_type(id int, value madlib.svec);
-        INSERT INTO madlib_test_type VALUES(1, '{1,2,3}'::float8[]::madlib.svec);
-        INSERT INTO madlib_test_type VALUES(2, '{4,5,6}'::float8[]::madlib.svec);
-        INSERT INTO madlib_test_type VALUES(3, '{7,8,9}'::float8[]::madlib.svec);
-        CREATE VIEW madlib_test_view AS SELECT madlib.normal_quantile(0.5, 0, 1);
-        CREATE VIEW madlib_test_agg AS SELECT madlib.mean(value) FROM madlib_test_type;
+        CREATE TABLESPACE ts1 FILESPACE fs;
+        CREATE TABLESPACE ts2 FILESPACE fs;
+
+        CREATE TABLE foo(i int) TABLESPACE ts1;
+        CREATE TABLE bar(i int) TABLESPACE ts2;
 SQL_EOF
 "
 
