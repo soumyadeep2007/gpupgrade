@@ -1,0 +1,80 @@
+-- Copyright (c) 2017-2022 VMware, Inc. or its affiliates
+-- SPDX-License-Identifier: Apache-2.0
+
+-- Check to ensure that we don't accidentally truncate CLOG during segment
+-- upgrade and end up with unfrozen user tuples referring to truncated CLOG.
+
+--------------------------------------------------------------------------------
+-- Create and setup upgradeable objects
+--------------------------------------------------------------------------------
+
+CREATE TABLE foo(i int);
+CREATE
+-- Insert some tuples in a segment that will refer to the current clog file
+INSERT INTO foo SELECT 1 FROM generate_series(1, 5);
+INSERT 5
+
+-- Burn through 1 CLOG segment on the master and seg 0
+
+!\retcode gpconfig -c debug_burn_xids -v on --skipvalidation;
+-- start_ignore
+20220711:13:49:03:2717405 gpconfig:station4:pivotal-[INFO]:-completed successfully with parameters '-c debug_burn_xids -v on --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -au;
+-- start_ignore
+20220711:13:49:03:2717999 gpstop:station4:pivotal-[INFO]:-Starting gpstop with args: -au
+20220711:13:49:03:2717999 gpstop:station4:pivotal-[INFO]:-Gathering information and validating the environment...
+20220711:13:49:03:2717999 gpstop:station4:pivotal-[INFO]:-Obtaining Greenplum Master catalog information
+20220711:13:49:03:2717999 gpstop:station4:pivotal-[INFO]:-Obtaining Segment details from master...
+20220711:13:49:03:2717999 gpstop:station4:pivotal-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 6.20.3+dev.155.g604a436ee22 build dev'
+20220711:13:49:03:2717999 gpstop:station4:pivotal-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+
+!\retcode echo "INSERT INTO foo VALUES(1);" > /tmp/clog_preservation.sql;
+-- start_ignore
+
+-- end_ignore
+(exited with code 0)
+!\retcode pgbench -n -f /tmp/clog_preservation.sql -c 8 -t 512 isolation2test;
+-- start_ignore
+transaction type: Custom query
+scaling factor: 1
+query mode: simple
+number of clients: 8
+number of threads: 1
+number of transactions per client: 512
+number of transactions actually processed: 4096/4096
+latency average: 1.136 ms
+tps = 7039.215787 (including connections establishing)
+tps = 7316.480658 (excluding connections establishing)
+
+-- end_ignore
+(exited with code 0)
+
+!\retcode gpconfig -r debug_burn_xids --skipvalidation;
+-- start_ignore
+20220711:13:49:04:2718066 gpconfig:station4:pivotal-[INFO]:-completed successfully with parameters '-r debug_burn_xids --skipvalidation'
+
+-- end_ignore
+(exited with code 0)
+!\retcode gpstop -au;
+-- start_ignore
+20220711:13:49:04:2718641 gpstop:station4:pivotal-[INFO]:-Starting gpstop with args: -au
+20220711:13:49:04:2718641 gpstop:station4:pivotal-[INFO]:-Gathering information and validating the environment...
+20220711:13:49:04:2718641 gpstop:station4:pivotal-[INFO]:-Obtaining Greenplum Master catalog information
+20220711:13:49:04:2718641 gpstop:station4:pivotal-[INFO]:-Obtaining Segment details from master...
+20220711:13:49:04:2718641 gpstop:station4:pivotal-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 6.20.3+dev.155.g604a436ee22 build dev'
+20220711:13:49:04:2718641 gpstop:station4:pivotal-[INFO]:-Signalling all postmaster processes to reload
+
+-- end_ignore
+(exited with code 0)
+
+SELECT count(*) FROM foo;
+ count 
+-------
+ 4101  
+(1 row)
